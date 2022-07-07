@@ -1,4 +1,4 @@
-use cgroups_rs::*;
+use cgroups_rs::{cpu::CpuController, *};
 
 use chroot::{apply_chroot, make_mount, mount_procfs, read_only_copy_mount, Mount};
 use libc_bindings::{
@@ -133,11 +133,28 @@ fn setup_cgroups(ctx: &Context) -> Cgroup {
     cgroups_rs::cgroup_builder::CgroupBuilder::new(&cgroup_name).build(hier)
 }
 
+fn get_cpu_usage_usec(cg_cpu: &CpuController) -> u64 {
+    let stat = cg_cpu.cpu().stat;
+    let expected_prefix = "usage_usec ";
+    if stat[0..expected_prefix.len()] != *expected_prefix {
+        panic!(
+            "Expected cpu stat to start with prefix {}. Actual stats were {}.",
+            expected_prefix, stat
+        );
+    }
+    let newline_ind = stat
+        .find('\n')
+        .expect("Expected cpu stats to contain a newline.");
+    stat[expected_prefix.len()..newline_ind]
+        .parse::<u64>()
+        .unwrap_or_else(|_| panic!("Couldn't parse cpu usage from stats {}", stat))
+}
+
 pub fn sandbox_main(ctx: Context) -> isize {
     set_kill_on_parent_death().unwrap();
     let cg = setup_cgroups(&ctx);
+    let cg_cpu: &cgroups_rs::cpu::CpuController = cg.controller_of().unwrap();
     let cg_mem: &cgroups_rs::memory::MemController = cg.controller_of().unwrap();
-    let cg_acct: &cgroups_rs::cpuacct::CpuAcctController = cg.controller_of().unwrap();
     let cg_pid: &cgroups_rs::pid::PidController = cg.controller_of().unwrap();
     cg_mem.set_limit(ctx.mem_limit_bytes).unwrap();
     setup_container_fs(&ctx);
@@ -168,18 +185,17 @@ pub fn sandbox_main(ctx: Context) -> isize {
                 let mut err_file = unsafe { File::from_raw_fd(err_pipe) };
                 let mut s = String::new();
                 cg_pid.set_pid_max(MaxValue::Value(ctx.pid_limit)).unwrap();
-                cg_mem.reset_max_usage().unwrap();
                 cg_mem.add_task(&CgroupPid::from(child as u64)).unwrap();
-                cg_acct.add_task(&CgroupPid::from(child as u64)).unwrap();
+                cg_cpu.add_task(&CgroupPid::from(child as u64)).unwrap();
                 cg_pid.add_task(&CgroupPid::from(child as u64)).unwrap();
                 // The program will start exec'ing immediately after we read this write, since the
                 // write of pipes block on the corresponding read.
                 let now = std::time::SystemTime::now();
                 err_file.read_to_string(&mut s).unwrap();
-                cg_acct.reset().unwrap();
+                let cpu_usage_at_start = get_cpu_usage_usec(&cg_cpu);
                 if s != "ok" {
-                    println!("killed setup");
-                    println!("done");
+                    eprintln!("killed setup");
+                    eprintln!("done");
                     continue;
                 }
                 let mut sleep = 5;
@@ -187,7 +203,7 @@ pub fn sandbox_main(ctx: Context) -> isize {
                     let maybe_exit = wait_for_nohang(child).unwrap();
                     match maybe_exit {
                         None => {
-                            let cpu_nanos = cg_acct.cpuacct().usage;
+                            let cpu_nanos: u64 = 0;
                             let cpu_time = std::time::Duration::new(
                                 cpu_nanos / 1_000_000_000,
                                 (cpu_nanos % 1_000_000_000) as u32,
@@ -252,8 +268,7 @@ pub fn sandbox_main(ctx: Context) -> isize {
                 // running until we kill them; we must this keep measuring resources
                 // until now
                 println!("mem {:?}", cg_mem.memswap().max_usage_in_bytes);
-                // Nanos -> Millis
-                println!("cpu {:?}", cg_acct.cpuacct().usage / 1_000_000);
+                println!("cpu {:?}", get_cpu_usage_usec(&cg_cpu) - cpu_usage_at_start);
                 println!("done");
             }
         }
@@ -294,7 +309,7 @@ fn setup_and_run(err_pipe: i32, cmd: String, args: Vec<String>, ctx: &Context) {
     write!(&mut err_file, "ok").unwrap();
     exec(cmd.clone(), args.clone()).unwrap_or_else(|err| {
         eprintln!("{:?}", err);
-        write!(&mut err_file, "exec").unwrap();
+        write!(&mut err_file, "exec {:?}", err).unwrap();
         process::exit(1);
     });
 }
