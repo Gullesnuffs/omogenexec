@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-for k in {0..99}; do
+for k in {0..9}; do
   # adduser doesn't fail if the user already exists
   deluser --system omogenexec-user$k
 done
