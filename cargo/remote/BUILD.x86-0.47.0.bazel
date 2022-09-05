@@ -1,0 +1,105 @@
+"""
+@generated
+cargo-raze crate build file.
+
+DO NOT EDIT! Replaced on runs of cargo-raze
+"""
+
+# buildifier: disable=load
+load("@bazel_skylib//lib:selects.bzl", "selects")
+
+# buildifier: disable=load
+load(
+    "@rules_rust//rust:defs.bzl",
+    "rust_binary",
+    "rust_library",
+    "rust_proc_macro",
+    "rust_test",
+)
+
+package(default_visibility = [
+    # Public for visibility by "@raze__crate__version//" targets.
+    #
+    # Prefer access through "//cargo", which limits external
+    # visibility to explicit Cargo.toml dependencies.
+    "//visibility:public",
+])
+
+licenses([
+    "notice",  # MIT from expression "MIT"
+])
+
+# Generated Targets
+# buildifier: disable=out-of-order-load
+# buildifier: disable=load-on-top
+load(
+    "@rules_rust//cargo:cargo_build_script.bzl",
+    "cargo_build_script",
+)
+
+cargo_build_script(
+    name = "x86_build_script",
+    srcs = glob(["**/*.rs"]),
+    build_script_env = {
+    },
+    crate_features = [
+        "csv",
+        "performance-counter",
+        "phf",
+        "phf_codegen",
+        "serde_json",
+    ],
+    crate_root = "build.rs",
+    data = glob(["**"]),
+    edition = "2018",
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+    version = "0.47.0",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@raze__csv__1_1_6//:csv",
+        "@raze__phf_codegen__0_9_0//:phf_codegen",
+        "@raze__serde_json__1_0_85//:serde_json",
+    ],
+)
+
+rust_library(
+    name = "x86",
+    srcs = glob(["**/*.rs"]),
+    crate_features = [
+        "csv",
+        "performance-counter",
+        "phf",
+        "phf_codegen",
+        "serde_json",
+    ],
+    crate_root = "src/lib.rs",
+    data = [],
+    edition = "2018",
+    rustc_flags = [
+        "--cap-lints=allow",
+    ],
+    tags = [
+        "cargo-raze",
+        "crate-name=x86",
+        "manual",
+    ],
+    version = "0.47.0",
+    # buildifier: leave-alone
+    deps = [
+        ":x86_build_script",
+        "@raze__bit_field__0_10_1//:bit_field",
+        "@raze__bitflags__1_2_1//:bitflags",
+        "@raze__phf__0_9_0//:phf",
+        "@raze__raw_cpuid__10_5_0//:raw_cpuid",
+    ],
+)
+
+# Unsupported target "kvm" with type "test" omitted
+
+# Unsupported target "no_std_build" with type "test" omitted

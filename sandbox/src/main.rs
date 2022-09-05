@@ -5,6 +5,7 @@ extern crate clap;
 extern crate libc;
 extern crate nix;
 extern crate syscalls;
+extern crate perfcnt;
 mod chroot;
 mod libc_bindings;
 mod quota;

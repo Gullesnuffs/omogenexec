@@ -1,7 +1,9 @@
 use cgroups_rs::{cpu::CpuController, *};
+use perfcnt::linux::{HardwareEventType, PerfCounterBuilderLinux};
+use perfcnt::{AbstractPerfCounter, PerfCounter};
 
-use chroot::{apply_chroot, make_mount, mount_procfs, read_only_copy_mount, Mount};
-use libc_bindings::{
+use crate::chroot::{apply_chroot, make_mount, mount_procfs, read_only_copy_mount, Mount};
+use crate::libc_bindings::{
     close_nonstd_fds, drop_groups, exec, fclose, fork, gid_t, kill, make_closing_pipes,
     privatize_mounts, repoint_stream, set_kill_on_parent_death, set_res_uid_and_gid, stderr, stdin,
     stdout, uid_t, wait_any_nohang, wait_for_nohang, FileAccessMode, ForkProcess,
@@ -150,6 +152,53 @@ fn get_cpu_usage_usec(cg_cpu: &CpuController) -> u64 {
         .unwrap_or_else(|_| panic!("Couldn't parse cpu usage from stats {}", stat))
 }
 
+struct Sync {
+    read: i32,
+    write: i32,
+}
+impl Sync {
+    fn new() -> Self {
+        let (read, write) = make_closing_pipes().unwrap();
+        Self { read, write }
+    }
+    fn into_event(self) -> Event {
+        unsafe { File::from_raw_fd(self.write) };
+        Event {
+            fd: unsafe { File::from_raw_fd(self.read) },
+        }
+    }
+
+    fn into_signal(self) -> Signal {
+        unsafe { File::from_raw_fd(self.read) };
+        Signal {
+            fd: unsafe { Some(File::from_raw_fd(self.write)) },
+        }
+    }
+}
+struct Event {
+    fd: File,
+}
+impl Event {
+    fn wait(&mut self) -> std::io::Result<String> {
+        let mut buffer = String::new();
+        self.fd.read_to_string(&mut buffer)?;
+        Ok(buffer)
+    }
+}
+struct Signal {
+    fd: Option<File>,
+}
+impl Signal {
+    fn signal(&mut self, msg: &str) -> std::io::Result<()> {
+        let mut fd = self
+            .fd
+            .take()
+            .expect("Trying to signal an already signaled event");
+        fd.write(msg.as_bytes())?;
+        fd.flush()
+    }
+}
+
 pub fn sandbox_main(ctx: Context) -> isize {
     set_kill_on_parent_death().unwrap();
     let cg = setup_cgroups(&ctx);
@@ -165,39 +214,59 @@ pub fn sandbox_main(ctx: Context) -> isize {
             break;
         }
         close_nonstd_fds().unwrap();
-        let pipes = make_closing_pipes().unwrap();
+        let sync1 = Sync::new();
+        let sync2 = Sync::new();
         eprintln!("cmd: {:?} {:?}", cmd.0, cmd.1);
         match fork().unwrap() {
             ForkProcess::Child => {
                 apply_chroot(&ctx.container_path, &ctx.working_directory);
                 drop_groups().unwrap();
                 set_res_uid_and_gid(ctx.sandbox_uid, ctx.sandbox_gid).unwrap();
-                // Close the read end
-                unsafe { File::from_raw_fd(pipes.0) };
-                setup_and_run(pipes.1, cmd.0, cmd.1, &ctx);
-                process::exit(1);
+
+                let mut sync1 = sync1.into_signal();
+                let mut sync2 = sync2.into_event();
+
+                set_streams(&ctx).unwrap_or_else(|err| {
+                    eprintln!("setup error: {:?}", err);
+                    sync1.signal("err").unwrap();
+                    process::exit(1);
+                });
+
+                sync1.signal("ok").unwrap();
+                sync2.wait().unwrap();
+
+                exec(cmd.0.clone(), cmd.1.clone()).unwrap();
             }
             ForkProcess::Parent(child) => {
-                // Close the write end
-                unsafe { File::from_raw_fd(pipes.1) };
+                let mut sync1 = sync1.into_event();
+                let mut sync2 = sync2.into_signal();
 
-                let err_pipe = pipes.0;
-                let mut err_file = unsafe { File::from_raw_fd(err_pipe) };
-                let mut s = String::new();
-                cg_pid.set_pid_max(MaxValue::Value(ctx.pid_limit)).unwrap();
-                cg_mem.add_task(&CgroupPid::from(child as u64)).unwrap();
-                cg_cpu.add_task(&CgroupPid::from(child as u64)).unwrap();
-                cg_pid.add_task(&CgroupPid::from(child as u64)).unwrap();
-                // The program will start exec'ing immediately after we read this write, since the
-                // write of pipes block on the corresponding read.
-                let now = std::time::SystemTime::now();
-                err_file.read_to_string(&mut s).unwrap();
-                let cpu_usage_at_start = get_cpu_usage_usec(&cg_cpu);
-                if s != "ok" {
+                if sync1.wait().unwrap() != "ok" {
                     eprintln!("killed setup");
                     eprintln!("done");
                     continue;
                 }
+
+                // Try to make sure the child is really blocked on the next read
+                std::thread::sleep(std::time::Duration::from_millis(1));
+
+                cg_pid.set_pid_max(MaxValue::Value(ctx.pid_limit)).unwrap();
+                cg_mem.add_task(&CgroupPid::from(child as u64)).unwrap();
+                cg_cpu.add_task(&CgroupPid::from(child as u64)).unwrap();
+                cg_pid.add_task(&CgroupPid::from(child as u64)).unwrap();
+                let now = std::time::SystemTime::now();
+
+                let mut instruction_counter: PerfCounter =
+                    PerfCounterBuilderLinux::from_hardware_event(HardwareEventType::Instructions)
+                        .for_pid(child)
+                        .finish()
+                        .unwrap();
+                instruction_counter.start().unwrap();
+
+                // The program will start exec'ing immediately after this signal.
+                sync2.signal("ok").unwrap();
+
+                let cpu_usage_at_start = get_cpu_usage_usec(&cg_cpu);
                 let mut sleep = 5;
                 loop {
                     let maybe_exit = wait_for_nohang(child).unwrap();
@@ -217,20 +286,12 @@ pub fn sandbox_main(ctx: Context) -> isize {
                             sleep = if 2 * sleep > 100 { 100 } else { sleep * 2 }
                         }
                         Some(exit) => {
-                            if s == "err" {
-                                eprintln!("failed to redirect streams in the sandbox");
-                                process::exit(1);
-                            } else if s == "okexec" {
-                                eprintln!("failed to exec in the sandbox (see stderr)");
-                                process::exit(1);
-                            } else {
-                                if libc::WIFEXITED(exit) {
-                                    println!("code {:?}", libc::WEXITSTATUS(exit));
-                                } else if libc::WIFSIGNALED(exit) {
-                                    println!("signal {:?}", libc::WTERMSIG(exit));
-                                } else if libc::WIFSTOPPED(exit) {
-                                    println!("signal {:?}", libc::WSTOPSIG(exit));
-                                }
+                            if libc::WIFEXITED(exit) {
+                                println!("code {:?}", libc::WEXITSTATUS(exit));
+                            } else if libc::WIFSIGNALED(exit) {
+                                println!("signal {:?}", libc::WTERMSIG(exit));
+                            } else if libc::WIFSTOPPED(exit) {
+                                println!("signal {:?}", libc::WSTOPSIG(exit));
                             }
                             break;
                         }
@@ -265,8 +326,9 @@ pub fn sandbox_main(ctx: Context) -> isize {
                     }
                 }
                 // Even though the main process exited, it can still have subprocess
-                // running until we kill them; we must this keep measuring resources
-                // until now
+                // running until we kill them; we must keep measuring resources until now
+                instruction_counter.stop().unwrap();
+                println!("ins {}", instruction_counter.read().unwrap());
                 println!("mem {:?}", cg_mem.memswap().max_usage_in_bytes);
                 println!("cpu {:?}", get_cpu_usage_usec(&cg_cpu) - cpu_usage_at_start);
                 println!("done");
@@ -297,19 +359,4 @@ fn set_streams(ctx: &Context) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn setup_and_run(err_pipe: i32, cmd: String, args: Vec<String>, ctx: &Context) {
-    let mut err_file = unsafe { File::from_raw_fd(err_pipe) };
-    set_streams(ctx).unwrap_or_else(|err| {
-        eprintln!("setup error: {:?}", err);
-        write!(&mut err_file, "err").unwrap();
-        process::exit(1);
-    });
-    write!(&mut err_file, "ok").unwrap();
-    exec(cmd.clone(), args.clone()).unwrap_or_else(|err| {
-        eprintln!("{:?}", err);
-        write!(&mut err_file, "exec {:?}", err).unwrap();
-        process::exit(1);
-    });
 }

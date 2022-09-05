@@ -1,8 +1,8 @@
 extern crate proc_mounts;
 
-use libc_bindings;
+use crate::libc_bindings;
 use std::path::PathBuf;
-use CONTAINER_ROOT_PATH;
+use crate::CONTAINER_ROOT_PATH;
 
 pub fn set_quota(block_quota: u64, inode_quota: u64, uid: libc_bindings::uid_t) {
     let sandbox_dev = libc_bindings::get_device(&PathBuf::from(CONTAINER_ROOT_PATH));

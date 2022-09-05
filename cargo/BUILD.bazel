@@ -41,7 +41,7 @@ alias(
 
 alias(
     name = "libc",
-    actual = "@raze__libc__0_2_97//:libc",
+    actual = "@raze__libc__0_2_132//:libc",
     tags = [
         "cargo-raze",
         "manual",
@@ -51,6 +51,15 @@ alias(
 alias(
     name = "nix",
     actual = "@raze__nix__0_7_0//:nix",
+    tags = [
+        "cargo-raze",
+        "manual",
+    ],
+)
+
+alias(
+    name = "perfcnt",
+    actual = "@raze__perfcnt__0_8_0//:perfcnt",
     tags = [
         "cargo-raze",
         "manual",
@@ -77,8 +86,18 @@ alias(
 
 # Export file for Stardoc support
 exports_files(
-    [
-        "crates.bzl",
-    ],
+    glob([
+        "**/*.bazel",
+        "**/*.bzl",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "srcs",
+    srcs = glob([
+        "**/*.bazel",
+        "**/*.bzl",
+    ]),
     visibility = ["//visibility:public"],
 )
