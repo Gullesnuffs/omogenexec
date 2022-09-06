@@ -259,6 +259,8 @@ pub fn sandbox_main(ctx: Context) -> isize {
                 let mut instruction_counter: PerfCounter =
                     PerfCounterBuilderLinux::from_hardware_event(HardwareEventType::Instructions)
                         .for_pid(child)
+                        .exclude_kernel()
+                        .exclude_hv()
                         .finish()
                         .unwrap();
                 instruction_counter.start().unwrap();
