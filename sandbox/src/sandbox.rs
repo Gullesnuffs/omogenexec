@@ -44,7 +44,7 @@ fn setup_mounts(ctx: &Context) {
 
     mount_procfs(&ctx.container_path);
 
-    for path in vec!["/bin", "/usr/bin", "/usr/lib", "/lib"] {
+    for path in vec!["/bin", "/usr/bin", "/usr/lib", "/lib", "/usr/include"] {
         make_mount(
             &ctx.container_path,
             &read_only_copy_mount(PathBuf::from(path)),
