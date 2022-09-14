@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 
+USER_COUNT=10
+echo "Adding ${USER_COUNT} dummy users"
 mkdir -p /var/lib/omogen/sandbox/
-addgroup --system omogenexec-users --quiet
-adduser --system omogenexec-user --no-create-home --quiet
-for k in {0..9}; do
+groupadd --system omogenexec-users
+useradd --system omogenexec-user -G omogenexec-users
+for (( k=0; k<=$USER_COUNT; k++ )); do
   # adduser doesn't fail if the user already exists
-  adduser --system omogenexec-user$k --no-create-home --quiet
-  adduser --quiet omogenexec-user$k omogenexec-users
+  useradd --system omogenexec-user$k -G omogenexec-users&
 done
-
-usermod -g omogenexec-users omogenexec-user
+wait
 
 chmod u+s /usr/bin/omogenexec
 chmod u+s /usr/bin/omogenexec-fixpermissions

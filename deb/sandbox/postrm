@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 
-for k in {0..9}; do
-  # adduser doesn't fail if the user already exists
-  deluser --system omogenexec-user$k
+USER_COUNT=10
+echo "Removing ${USER_COUNT} previously added dummy users"
+
+for (( k=0; k<=$USER_COUNT; k++ )); do
+  userdel omogenexec-user$k&
 done
-deluser --system omogenexec-user
-delgroup --system omogenexec-users
+wait
+userdel omogenexec-user
+groupdel omogenexec-users
